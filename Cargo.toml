@@ -1,0 +1,53 @@
+[package]
+name = "searxng-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Metasearch engine in Rust - a SearXNG port with MCP server support"
+license = "AGPL-3.0-or-later"
+
+[[bin]]
+name = "searxng-rs"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "socks", "gzip", "brotli", "deflate", "cookies", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+scraper = "0.21"
+dashmap = "6"
+futures = "0.3"
+async-trait = "0.1"
+url = "2"
+percent-encoding = "2"
+regex = "1"
+base64 = "0.22"
+sxd-document = "0.3"
+sxd-xpath = "0.4"
+
+# MCP SDK
+rmcp = { version = "3", features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+
+# JSON API server
+axum = { version = "0.8", features = ["json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+opt-level = 3

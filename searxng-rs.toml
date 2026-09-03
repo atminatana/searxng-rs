@@ -1,0 +1,47 @@
+[general]
+instance_name = "SearXNG-rs"
+default_lang = "auto"
+debug = false
+
+[server]
+bind_address = "127.0.0.1"
+port = 8888
+max_request_timeout = 10.0
+
+[search]
+safesearch = 0
+default_timeout = 5.0
+max_page = 50
+autocomplete = false
+ban_time_on_fail = 5
+max_ban_time_on_fail = 120
+
+[outgoing]
+# user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
+# proxy = "socks5h://127.0.0.1:9050"   # Tor
+verify = true
+http2 = true
+max_connections_per_host = 8
+
+[mcp]
+enabled = true
+sse_port = 3001   # MCP over Streamable HTTP in addition to stdio
+
+[engines]
+google = { enabled = true, weight = 1.0, timeout = 6.0 }
+bing = { enabled = true, weight = 1.0 }
+duckduckgo = { enabled = true, weight = 1.0 }
+wikipedia = { enabled = true, weight = 1.0 }
+brave = { enabled = true, weight = 1.0 }
+yandex = { enabled = true, weight = 1.0 }
+
+# A custom XPath engine - configured entirely in TOML, no Rust code needed.
+# [[engines.custom]]
+# name = "hacker_news"
+# type = "xpath"
+# enabled = true
+# search_url = "https://hn.algolia.com/?q={query}"
+# results_xpath = "//div[contains(@class,'SearchResult')]"
+# url_xpath = ".//a/@href"
+# title_xpath = ".//a"
+# content_xpath = ".//p"
