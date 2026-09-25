@@ -1,5 +1,5 @@
 //! Raw text query parsing: `!bang` (engine/category), `!!` (feeling lucky),
-//! `!!bang` (external bang), `:lang`, `<timeout`.
+//! `!!bang` (external bang), `:lang`, `<timeout>`.
 //!
 //! Port of `searx/query.py` from SearXNG.
 
@@ -307,6 +307,7 @@ impl RawTextQuery {
             ..Default::default()
         };
         rq._parse_query();
+        tracing::trace!(target: "searxng_rs::query", query = ?rq.query, get_query = ?rq.get_query(), enginerefs = ?rq.enginerefs, languages = ?rq.languages, timeout_limit = ?rq.timeout_limit, external_bang = ?rq.external_bang, specific = ?rq.specific, redirect_to_first_result = ?rq.redirect_to_first_result, disabled_engines = ?rq.disabled_engines, "parsed query");
         rq
     }
 

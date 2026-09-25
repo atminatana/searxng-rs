@@ -1,9 +1,11 @@
 //! CLI entry point. Commands: `search`, `serve`, `mcp`, `engines`, `config`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use searxng_rs::config::Config;
@@ -74,14 +76,29 @@ enum ConfigAction {
     Show,
 }
 
-fn init_tracing(debug: bool) {
-    let level = if debug { "debug" } else { "info" };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("searxng_rs={level},reqwest={level}")));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+fn init_tracing(debug: bool, log_path: &Path) -> anyhow::Result<()> {
+    let level = if debug { "trace" } else { "info" };
+    let filter = EnvFilter::new(format!("searxng_rs={level},reqwest=warn"));
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
+        .with_ansi(true)
+        .with_level(true);
+
+    let file = std::fs::File::create(log_path)?;
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(false)
+        .with_level(true)
+        .with_writer(std::sync::Mutex::new(file));
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(file_layer)
+        .with(filter)
         .init();
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -89,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let config = Arc::new(Config::load(cli.config.as_deref())?);
-    init_tracing(config.general.debug);
+    init_tracing(config.general.debug, Path::new("searxng-rs.log"))?;
 
     let client = HttpClient::from_config(&config)?;
     let registry = Arc::new(EngineRegistry::from_config(&config, &client));

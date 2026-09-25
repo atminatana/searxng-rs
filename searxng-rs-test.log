@@ -1,0 +1,2 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running `target\debug\searxng-rs.exe sse --port 3001`

@@ -62,12 +62,16 @@ impl Engine for BingEngine {
             .join("&");
         let url = format!("{BASE_URL}/search?{qs}");
 
+        tracing::info!("[CALL] engine::bing(url={})", url);
+
         let resp = client
             .get(&url, Some(lang_header(params.language())))
             .await
             .map_err(|e| EngineError::Request(e.to_string()))?;
 
         let status = resp.status().as_u16();
+        tracing::info!("[RESP] engine::bing status={}, url={}", status, url);
+
         if let Some(err) = EngineError::from_status(status) {
             return Err(err);
         }
@@ -77,7 +81,12 @@ impl Engine for BingEngine {
             .await
             .map_err(|e| EngineError::Request(e.to_string()))?;
 
-        Ok(parse_results(&body, &self.base.name))
+        tracing::info!("[RESP] engine::bing body_len={}, url={}", body.len(), url);
+        
+        let results = parse_results(&body, &self.base.name);
+        tracing::info!("[RESP] engine::bing results={}, url={}", results.results.len(), url);
+        
+        Ok(results)
     }
 }
 

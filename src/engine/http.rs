@@ -2,11 +2,25 @@
 //! SearXNG — one configured `reqwest::Client` used by all engines.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
-use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_LANGUAGE, COOKIE};
+use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE};
 
 use crate::config::{Config, Outgoing};
+
+#[allow(dead_code)]
+pub(crate) const TRACE_BODY_PREVIEW: usize = 2048;
+
+#[allow(dead_code)]
+pub(crate) fn body_preview(body: &str) -> String {
+    if body.len() <= TRACE_BODY_PREVIEW {
+        body.to_string()
+    } else {
+        let truncated: String = body.chars().take(TRACE_BODY_PREVIEW).collect();
+        format!("{}…(truncated, total {} bytes)", truncated, body.len())
+    }
+}
 
 /// Wrapper around a configured `reqwest::Client` plus request helpers shared
 /// by all engines.
@@ -53,8 +67,15 @@ impl HttpClient {
 
     /// Get with a browser-ish header set.
     pub async fn get(&self, url: &str, lang: Option<&str>) -> Result<reqwest::Response, reqwest::Error> {
-        let req = self.client.get(url).headers(default_headers(lang));
-        req.send().await
+        tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, cookies = 0, "request");
+        let start = Instant::now();
+        let result = self.client.get(url).headers(default_headers(lang)).send().await;
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(resp) => tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, status = resp.status().as_u16(), final_url = %resp.url(), content_length = ?resp.content_length(), content_type = ?resp.headers().get(CONTENT_TYPE).and_then(|h| h.to_str().ok()), elapsed = ?elapsed, "response"),
+            Err(err) => tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, error = %err, elapsed = ?elapsed, "response error"),
+        }
+        result
     }
 
     /// Get with extra cookies (used by engines that need a cookie header,
@@ -65,6 +86,7 @@ impl HttpClient {
         lang: Option<&str>,
         cookies: &[(String, String)],
     ) -> Result<reqwest::Response, reqwest::Error> {
+        tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, cookies = cookies.len(), "request");
         let mut headers = default_headers(lang);
         if !cookies.is_empty() {
             let cookie = cookies
@@ -74,7 +96,14 @@ impl HttpClient {
                 .join("; ");
             headers.insert(COOKIE, cookie.parse().unwrap());
         }
-        self.client.get(url).headers(headers).send().await
+        let start = Instant::now();
+        let result = self.client.get(url).headers(headers).send().await;
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(resp) => tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, status = resp.status().as_u16(), final_url = %resp.url(), content_length = ?resp.content_length(), content_type = ?resp.headers().get(CONTENT_TYPE).and_then(|h| h.to_str().ok()), elapsed = ?elapsed, "response"),
+            Err(err) => tracing::trace!(target: "searxng_rs::http", method = "GET", url, lang = ?lang, error = %err, elapsed = ?elapsed, "response error"),
+        }
+        result
     }
 
     pub async fn post(
@@ -83,7 +112,15 @@ impl HttpClient {
         form: &[(&str, String)],
         lang: Option<&str>,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        self.client.post(url).headers(default_headers(lang)).form(form).send().await
+        tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, form = ?form, "request");
+        let start = Instant::now();
+        let result = self.client.post(url).headers(default_headers(lang)).form(form).send().await;
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(resp) => tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, status = resp.status().as_u16(), final_url = %resp.url(), content_length = ?resp.content_length(), content_type = ?resp.headers().get(CONTENT_TYPE).and_then(|h| h.to_str().ok()), elapsed = ?elapsed, "response"),
+            Err(err) => tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, error = %err, elapsed = ?elapsed, "response error"),
+        }
+        result
     }
 
     /// Post a form with extra cookies (used by e.g. Startpage's `preferences`
@@ -95,6 +132,7 @@ impl HttpClient {
         lang: Option<&str>,
         cookies: &[(String, String)],
     ) -> Result<reqwest::Response, reqwest::Error> {
+        tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, cookies = cookies.len(), form = ?form, "request");
         let mut headers = default_headers(lang);
         if !cookies.is_empty() {
             let cookie = cookies
@@ -105,7 +143,14 @@ impl HttpClient {
             headers.insert(COOKIE, cookie.parse().unwrap());
         }
         let form_refs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        self.client.post(url).headers(headers).form(&form_refs).send().await
+        let start = Instant::now();
+        let result = self.client.post(url).headers(headers).form(&form_refs).send().await;
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(resp) => tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, status = resp.status().as_u16(), final_url = %resp.url(), content_length = ?resp.content_length(), content_type = ?resp.headers().get(CONTENT_TYPE).and_then(|h| h.to_str().ok()), elapsed = ?elapsed, "response"),
+            Err(err) => tracing::trace!(target: "searxng_rs::http", method = "POST", url, lang = ?lang, error = %err, elapsed = ?elapsed, "response error"),
+        }
+        result
     }
 }
 

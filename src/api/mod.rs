@@ -5,6 +5,7 @@
 //! - `GET /config` — engine configuration
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -69,7 +70,7 @@ pub async fn serve(
         .await
         .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
     tracing::info!("JSON API listening on http://{addr}");
-    println!("MCP (Streamable HTTP) endpoint: http://{addr}/mcp");
+    tracing::info!("MCP (Streamable HTTP) endpoint: http://{addr}/mcp");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -82,16 +83,21 @@ async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchQueryParams>,
 ) -> Response {
+    let start = Instant::now();
+    tracing::info!("[CALL] api::search(q={:?}, format={:?}, safesearch={:?}, pageno={:?}, engines={:?}, language={:?})",
+        params.q, params.format, params.safesearch, params.pageno, params.engines, params.language);
     let safesearch = params.safesearch.unwrap_or(state.config.search.safe_search).min(2);
     let pageno = params.pageno.unwrap_or(1);
 
     if let Some(format) = &params.format {
         if format != "json" {
-            return (
+            let resp = (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": format!("format '{format}' is not supported, only 'json'")})),
             )
                 .into_response();
+            tracing::warn!("[RESP] api::search -> 400, time={:.3}s", start.elapsed().as_secs_f64());
+            return resp;
         }
     }
 
@@ -120,30 +126,38 @@ async fn search(
     }
 
     if sq.query.trim().is_empty() {
-        return (
+        let resp = (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "query parameter 'q' is required"})),
         )
             .into_response();
+        tracing::warn!("[RESP] api::search -> 400, time={:.3}s", start.elapsed().as_secs_f64());
+        return resp;
     }
 
     let resp = match state.search.search(&sq).await {
         Ok(r) => r,
         Err(e) => {
-            return (
+            let resp = (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
                 .into_response();
+            tracing::warn!("[RESP] api::search -> 500, time={:.3}s", start.elapsed().as_secs_f64());
+            return resp;
         }
     };
 
     if let Some(url) = &resp.redirect_url {
-        return Json(json!({"redirect": url})).into_response();
+        let r = Json(json!({"redirect": url})).into_response();
+        tracing::info!("[RESP] api::search -> 302, redirect={}, time={:.3}s", url, start.elapsed().as_secs_f64());
+        return r;
     }
 
     let payload = search_api_payload(&resp);
-    Json(payload).into_response()
+    let r = Json(payload).into_response();
+    tracing::info!("[RESP] api::search -> 200, results={}, time={:.3}s", resp.results.len(), start.elapsed().as_secs_f64());
+    r
 }
 
 /// Produce a response shaped like SearXNG's `format=json` output.
@@ -160,6 +174,7 @@ fn search_api_payload(resp: &SearchResponse) -> Value {
 }
 
 async fn config(State(state): State<AppState>) -> Json<Value> {
+    tracing::info!("[CALL] api::config()");
     let engines: Vec<Value> = state
         .registry
         .specs
@@ -174,11 +189,13 @@ async fn config(State(state): State<AppState>) -> Json<Value> {
         })
         .collect();
 
-    Json(json!({
+    let resp = Json(json!({
         "instance_name": state.config.general.instance_name,
         "default_lang": state.config.general.default_lang,
         "max_page": state.config.search.max_page,
         "safesearch": state.config.search.safe_search,
         "engines": engines,
-    }))
+    }));
+    tracing::info!("[RESP] api::config -> 200, engines={}", engines.len());
+    resp
 }

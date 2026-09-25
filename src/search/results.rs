@@ -46,6 +46,7 @@ impl ResultContainer {
         // If a result with the same url exists already, merge engine refs.
         if let Some(key) = dedup_key(&r) {
             if let Some(existing) = self.results.iter_mut().find(|e| dedup_key(e) == Some(key.clone())) {
+                tracing::trace!(target: "searxng_rs::search", dedup_key = ?key, engine = ?r.engine, url = ?r.url, action = "merge", engines = ?existing.engines, "dedup merge");
                 if !existing.engines.contains(&r.engine) {
                     existing.engines.push(r.engine.clone());
                 }
@@ -61,6 +62,7 @@ impl ResultContainer {
                 existing.score = existing.score.max(r.score);
                 return;
             }
+            tracing::trace!(target: "searxng_rs::search", dedup_key = ?key, engine = ?r.engine, url = ?r.url, action = "keep", "dedup keep");
             self.seen.insert(key);
         }
         self.results.push(r);

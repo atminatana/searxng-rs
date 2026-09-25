@@ -54,6 +54,8 @@ impl SearchEngine {
 
     /// Run a search for a parsed query + resolved engine refs.
     pub async fn search(&self, query: &SearchQuery) -> Result<SearchResponse, anyhow::Error> {
+        let start = Instant::now();
+        tracing::trace!(target: "searxng_rs::search", query = ?query.query, engines = ?query.enginerefs, safesearch = query.safe_search, pageno = query.pageno, languages = ?query.languages, timeout_limit = ?query.timeout_limit, redirect_to_first_result = query.redirect_to_first_result, external_bang = ?query.external_bang, disabled_engines = ?query.disabled_engines, "search request");
         // 1. External bang (!!ddg ...) → redirect, no engine queries.
         if let Some(bang) = query.external_bang.as_deref() {
             if let Some((_, tmpl)) = crate::query::EXTERNAL_BANGS
@@ -61,10 +63,13 @@ impl SearchEngine {
                 .find(|(name, _)| *name == bang)
             {
                 let url = tmpl.replace("{query}", &urlencode(&query.query));
-                return Ok(SearchResponse {
+                tracing::trace!(target: "searxng_rs::search", external_bang = bang, redirect_url = ?url, "external bang redirect");
+                let resp = SearchResponse {
                     redirect_url: Some(url),
                     ..Default::default()
-                });
+                };
+                tracing::trace!(target: "searxng_rs::search", redirect_url = ?resp.redirect_url, results = 0, time = ?start.elapsed().as_secs_f64(), "search response");
+                return Ok(resp);
             }
         }
 
@@ -77,6 +82,7 @@ impl SearchEngine {
         } else {
             query.enginerefs.clone()
         };
+        tracing::trace!(target: "searxng_rs::search", engine_refs = ?engine_refs, "resolved engine refs");
 
         let timeout = resolve_timeout(
             &engine_refs,
@@ -84,6 +90,7 @@ impl SearchEngine {
             query.timeout_limit,
             self.config.server.max_request_timeout,
         );
+        tracing::trace!(target: "searxng_rs::search", timeout_s = timeout, max_request_timeout = self.config.server.max_request_timeout, "resolved timeout");
 
         // 3. Fire all engine requests in parallel.
         let mut tasks = FuturesUnordered::new();
@@ -131,6 +138,10 @@ impl SearchEngine {
                     elapsed: start.elapsed(),
                 };
                 input.hydrate(result);
+                tracing::trace!(target: "searxng_rs::search", engine = input.engine, category = input.category, results = input.results.len(), error = ?input.error, elapsed = ?input.elapsed.as_secs_f64(), "engine outcome");
+                for result in &input.results {
+                    tracing::trace!(target: "searxng_rs::search", engine = input.engine, url = ?result.url, title = ?result.title, content_len = result.content.len(), "engine result");
+                }
                 input
             });
         }
@@ -149,15 +160,17 @@ impl SearchEngine {
                 .iter()
                 .find(|r| !r.url.is_empty())
             {
-                return Ok(SearchResponse {
+                let resp = SearchResponse {
                     redirect_url: Some(first.url.clone()),
                     results: container.results.clone(),
                     ..Default::default()
-                });
+                };
+                tracing::trace!(target: "searxng_rs::search", redirect_url = ?resp.redirect_url, results = resp.results.len(), time = ?start.elapsed().as_secs_f64(), "search response (feeling lucky)");
+                return Ok(resp);
             }
         }
 
-        Ok(SearchResponse {
+        let resp = SearchResponse {
             redirect_url: None,
             results: container.results,
             suggestions: container.suggestions,
@@ -170,7 +183,9 @@ impl SearchEngine {
                 .collect(),
             total_time: now.elapsed(),
             outcomes,
-        })
+        };
+        tracing::trace!(target: "searxng_rs::search", results = resp.results.len(), unresponsive = ?resp.unresponsive_engines, suggestions = resp.suggestions.len(), corrections = resp.corrections.len(), answers = resp.answers.len(), time = ?start.elapsed().as_secs_f64(), "search response");
+        Ok(resp)
     }
 
     fn default_engines(&self, query: &SearchQuery) -> Vec<EngineRef> {
@@ -210,13 +225,14 @@ fn resolve_timeout(
             default_timeout = default_timeout.max(engine.timeout().unwrap_or(5.0));
         }
     }
-
-    match (max_request_timeout.is_finite(), query_timeout) {
+    let resolved = match (max_request_timeout.is_finite(), query_timeout) {
         (false, None) => default_timeout,
         (false, Some(q)) => default_timeout.min(q),
         (true, None) => default_timeout.min(max_request_timeout),
         (true, Some(q)) => q.min(max_request_timeout),
-    }
+    };
+    tracing::trace!(target: "searxng_rs::search", engine_refs = ?engine_refs.iter().map(|e| e.name.clone()).collect::<Vec<_>>(), default_timeout, max_request_timeout, query_timeout = ?query_timeout, resolved_timeout = resolved, "resolved timeout");
+    resolved
 }
 
 fn urlencode(s: &str) -> String {
@@ -246,6 +262,7 @@ fn merge_outcomes(outcomes: &[EngineOutcome]) -> ResultContainer {
         container.corrections.extend(outcome.corrections.clone());
         container.answers.extend(outcome.answers.clone());
     }
+    tracing::trace!(target: "searxng_rs::search", total_results = container.results.len(), total_suggestions = container.suggestions.len(), total_corrections = container.corrections.len(), total_answers = container.answers.len(), "merged outcomes");
     container
 }
 
