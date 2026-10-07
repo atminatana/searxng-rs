@@ -10,11 +10,17 @@ use tokio::time::Instant;
 
 use crate::config::Config;
 use crate::engine::http::HttpClient;
-use crate::engine::{EngineError, EngineParams, EngineRegistry, EngineResults, SearchResult};
+use crate::engine::{Engine, EngineError, EngineParams, EngineRegistry, EngineResults, SearchResult};
 use crate::query::{EngineRef, RawTextQuery};
+use crate::search::cache::{CacheKey, ResultCache};
+use crate::search::rate_limit::RateLimiter;
+use crate::search::suspension::{suspension_time, SuspensionRegistry};
 
+pub mod cache;
 pub mod models;
+pub mod rate_limit;
 pub mod results;
+pub mod suspension;
 
 pub use models::{SearchQuery};
 pub use results::ResultContainer;
@@ -37,15 +43,74 @@ pub struct SearchEngine {
     registry: Arc<EngineRegistry>,
     client: Arc<HttpClient>,
     pub config: Arc<Config>,
+    suspensions: SuspensionRegistry,
+    cache: ResultCache,
+    rate_limiter: RateLimiter,
 }
 
 impl SearchEngine {
     pub fn new(registry: Arc<EngineRegistry>, client: Arc<HttpClient>, config: Arc<Config>) -> Self {
+        let search = &config.search;
+        let cache = ResultCache::new(Duration::from_secs_f32(search.cache_ttl.max(0.0)), search.cache_max_entries);
+        let rate_limiter = RateLimiter::new(Duration::from_secs_f32(search.engine_min_interval.max(0.0)));
         Self {
             registry,
             client,
             config,
+            suspensions: SuspensionRegistry::default(),
+            cache,
+            rate_limiter,
         }
+    }
+
+    /// One engine request behind the trust guards: a suspended engine is not
+    /// queried, a fresh cached result is reused, requests to one engine are
+    /// spaced out, and a failure suspends the engine (see `suspension`).
+    async fn run_engine(
+        &self,
+        engine: Arc<dyn Engine>,
+        engine_name: &str,
+        params: &EngineParams,
+        timeout: Duration,
+    ) -> Result<EngineResults, EngineError> {
+        let now = Instant::now().into_std();
+        if let Some((reason, remaining)) = self.suspensions.active(engine_name, now) {
+            return Err(EngineError::Suspended {
+                reason,
+                remaining_secs: remaining.as_secs_f64().ceil() as u64,
+            });
+        }
+        let key = CacheKey::new(engine_name, params);
+        if let Some(results) = self.cache.get(&key, now) {
+            tracing::trace!(target: "searxng_rs::search", engine = engine_name, results = results.results.len(), "cached results");
+            return Ok(results);
+        }
+        let wait = self
+            .rate_limiter
+            .reserve(engine_name, now, timeout)
+            .map_err(|limited| EngineError::RateLimited(limited.wait.as_secs_f32()))?;
+        if !wait.is_zero() {
+            tracing::trace!(target: "searxng_rs::search", engine = engine_name, wait_s = wait.as_secs_f32(), "rate limit wait");
+            tokio::time::sleep(wait).await;
+        }
+
+        let result = tokio::time::timeout(timeout.saturating_sub(wait), engine.search(params, &self.client))
+            .await
+            .unwrap_or(Err(EngineError::Timeout));
+
+        let now = Instant::now().into_std();
+        match &result {
+            Ok(results) => {
+                self.suspensions.resume(engine_name);
+                self.cache.insert(key, results.clone(), now);
+            }
+            Err(error) => {
+                if let Some(duration) = suspension_time(error, &self.config.search) {
+                    self.suspensions.suspend(engine_name, now, duration, &error.to_string());
+                }
+            }
+        }
+        result
     }
 
     pub fn registry(&self) -> &Arc<EngineRegistry> {
@@ -117,16 +182,11 @@ impl SearchEngine {
                 pageno: query.pageno,
                 category: cat.clone(),
             };
-            let engine = engine.clone();
             let engine_name = engineref.name.clone();
-            let client = self.client.clone();
+            let timeout = Duration::from_secs_f32(timeout.max(0.1));
             tasks.push(async move {
                 let start = Instant::now();
-                let result = tokio::time::timeout(
-                    Duration::from_secs_f32(timeout.max(0.1)),
-                    engine.search(&eparams, &client),
-                )
-                .await;
+                let result = self.run_engine(engine, &engine_name, &eparams, timeout).await;
                 let mut input = EngineOutcome {
                     engine: engine_name,
                     category: cat,
@@ -268,20 +328,17 @@ fn merge_outcomes(outcomes: &[EngineOutcome]) -> ResultContainer {
 
 // Helper to hydrate a partial EngineOutcome built synchronously.
 impl EngineOutcome {
-    fn hydrate(&mut self, result: Result<Result<EngineResults, EngineError>, tokio::time::error::Elapsed>) {
+    fn hydrate(&mut self, result: Result<EngineResults, EngineError>) {
         match result {
-            Ok(Ok(res)) => {
+            Ok(res) => {
                 self.results = res.results;
                 self.suggestions = res.suggestions;
                 self.corrections = res.corrections;
                 self.answers = res.answers;
                 self.error = None;
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 self.error = Some(e);
-            }
-            Err(_) => {
-                self.error = Some(EngineError::Timeout);
             }
         }
     }
@@ -339,5 +396,173 @@ mod tests {
         assert_eq!(resolve_timeout(&[], &EngineRegistry::empty(), None, 10.0), 5.0);
         // max_request_timeout caps it
         // user query timeout is the strictest
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+
+    use super::*;
+
+    const ENGINE: &str = "scripted";
+
+    /// Engine that replays scripted outcomes and counts real calls.
+    struct ScriptedEngine {
+        calls: AtomicU32,
+        script: Mutex<VecDeque<Result<EngineResults, EngineError>>>,
+    }
+
+    #[async_trait]
+    impl Engine for ScriptedEngine {
+        fn name(&self) -> &str {
+            ENGINE
+        }
+
+        async fn search(&self, _: &EngineParams, _: &HttpClient) -> Result<EngineResults, EngineError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.script.lock().expect("script").pop_front().expect("script exhausted")
+        }
+    }
+
+    impl ScriptedEngine {
+        fn calls(&self) -> u32 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    fn one_result() -> Result<EngineResults, EngineError> {
+        let mut results = EngineResults::default();
+        results.add(SearchResult {
+            url: "https://example.com/".to_string(),
+            title: "Example".to_string(),
+            engine: ENGINE.to_string(),
+            ..Default::default()
+        });
+        Ok(results)
+    }
+
+    /// Guards off unless a test turns one on.
+    fn quiet_config() -> Config {
+        let mut config = Config::default();
+        config.search.cache_ttl = 0.0;
+        config.search.engine_min_interval = 0.0;
+        config
+    }
+
+    fn search_engine(
+        script: Vec<Result<EngineResults, EngineError>>,
+        config: Config,
+    ) -> (Arc<ScriptedEngine>, SearchEngine) {
+        let engine = Arc::new(ScriptedEngine {
+            calls: AtomicU32::new(0),
+            script: Mutex::new(script.into()),
+        });
+        let registry = Arc::new(EngineRegistry::with_engines(vec![(ENGINE, engine.clone())]));
+        let client = HttpClient::new(&config.outgoing).expect("http client");
+        (engine, SearchEngine::new(registry, client, Arc::new(config)))
+    }
+
+    fn query() -> SearchQuery {
+        let mut query = SearchQuery::simple("rust", 0);
+        query.enginerefs = vec![EngineRef {
+            name: ENGINE.to_string(),
+            category: "none".to_string(),
+        }];
+        query
+    }
+
+    #[tokio::test]
+    async fn failed_engine_is_suspended_and_not_queried_again() {
+        let (engine, search) = search_engine(vec![Err(EngineError::Captcha), one_result()], quiet_config());
+
+        let first = search.search(&query()).await.expect("search");
+        assert!(matches!(first.outcomes[0].error, Some(EngineError::Captcha)));
+
+        let second = search.search(&query()).await.expect("search");
+        let error = second.outcomes[0].error.as_ref().expect("suspended error");
+        assert!(matches!(error, EngineError::Suspended { .. }), "{error:?}");
+        assert_eq!(error.to_string(), "engine suspended: CAPTCHA required; 3600s left");
+        assert_eq!(second.unresponsive_engines, vec![ENGINE]);
+        assert_eq!(engine.calls(), 1, "suspended engine must not be queried");
+    }
+
+    #[tokio::test]
+    async fn success_resets_the_error_count() {
+        let mut config = quiet_config();
+        config.search.suspended_times.captcha = 0;
+        let (engine, search) = search_engine(vec![Err(EngineError::Captcha), one_result()], config);
+
+        search.search(&query()).await.expect("search");
+        assert_eq!(search.suspensions.continuous_errors(ENGINE), 1);
+
+        let second = search.search(&query()).await.expect("search");
+        assert_eq!(second.results.len(), 1);
+        assert_eq!(engine.calls(), 2);
+        assert_eq!(search.suspensions.continuous_errors(ENGINE), 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_query_is_served_from_the_cache() {
+        let mut config = quiet_config();
+        config.search.cache_ttl = 300.0;
+        let (engine, search) = search_engine(vec![one_result()], config);
+
+        let first = search.search(&query()).await.expect("search");
+        let second = search.search(&query()).await.expect("search");
+
+        assert_eq!(first.results.len(), 1);
+        assert_eq!(second.results.len(), 1);
+        assert_eq!(second.results[0].url, "https://example.com/");
+        assert_eq!(engine.calls(), 1, "second search must hit the cache");
+    }
+
+    #[tokio::test]
+    async fn errors_are_not_cached() {
+        let mut config = quiet_config();
+        config.search.cache_ttl = 300.0;
+        config.search.suspended_times.captcha = 0;
+        let (engine, search) = search_engine(vec![Err(EngineError::Captcha), one_result()], config);
+
+        let first = search.search(&query()).await.expect("search");
+        assert!(first.results.is_empty());
+        let second = search.search(&query()).await.expect("search");
+
+        assert_eq!(second.results.len(), 1);
+        assert_eq!(engine.calls(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn requests_to_one_engine_are_spaced_by_the_interval() {
+        let mut config = quiet_config();
+        config.search.engine_min_interval = 1.0;
+        let (engine, search) = search_engine(vec![one_result(), one_result()], config);
+
+        let started = Instant::now();
+        search.search(&query()).await.expect("search");
+        search.search(&query()).await.expect("search");
+
+        assert!(started.elapsed() >= Duration::from_secs(1), "second request waited for its slot");
+        assert_eq!(engine.calls(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_longer_than_the_timeout_is_refused() {
+        let mut config = quiet_config();
+        config.search.engine_min_interval = 1.0;
+        let (engine, search) = search_engine(vec![one_result()], config);
+        let mut query = query();
+        query.timeout_limit = Some(0.5);
+
+        search.search(&query).await.expect("search");
+        let second = search.search(&query).await.expect("search");
+
+        let error = second.outcomes[0].error.as_ref().expect("rate limited error");
+        assert!(matches!(error, EngineError::RateLimited(_)), "{error:?}");
+        assert_eq!(engine.calls(), 1);
     }
 }

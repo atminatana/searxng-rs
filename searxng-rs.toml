@@ -13,8 +13,21 @@ safesearch = 0
 default_timeout = 5.0
 max_page = 50
 autocomplete = false
+# Engine suspension after a timeout / network error: min(max, ban), seconds.
 ban_time_on_fail = 5
 max_ban_time_on_fail = 120
+# Cache of engine results: lifetime in seconds (0 = off) and max entries.
+cache_ttl = 300.0
+cache_max_entries = 1000
+# Minimum interval between two requests to the same engine, seconds (0 = off).
+engine_min_interval = 1.0
+
+# Engine suspension after typed errors, seconds (0 = off). Defaults = SearXNG.
+[search.suspended_times]
+access_denied = 180       # "Access denied", HTTP 402/403
+captcha = 3600            # CAPTCHA page
+too_many_requests = 180   # HTTP 429
+cf_captcha = 1296000      # Cloudflare CAPTCHA (15 days)
 
 [outgoing]
 # user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"

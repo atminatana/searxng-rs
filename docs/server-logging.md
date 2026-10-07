@@ -37,12 +37,12 @@ WARN  [RESP] api::search -> 400, time=0.001s
 ## Изменённые файлы
 
 ### `src/main.rs`
-- `init_tracing(debug, log_path)` — переписан на композицию слоёв через `tracing_subscriber::registry()`:
-  - слой stdout — `.with_ansi(true)`, `.with_level(true)`, `.with_target(false)`;
+- `init_tracing(debug, log_path, is_stdio_mcp)` — переписан на композицию слоёв через `tracing_subscriber::registry()`:
+  - слой консоли — stdout с `.with_ansi(true)`; в режиме `mcp` (stdio) — stderr с `.with_ansi(false)` (2026-10-07); `.with_level(true)`, `.with_target(false)`;
   - слой файла — `.with_writer(Mutex::new(File::create(log_path)?))`, `.with_ansi(false)`, `.with_level(true)`, `.with_target(false)`;
-  - фильтр — `EnvFilter::new("searxng_rs={level},reqwest={level}")` (детерминированный, `RUST_LOG` больше не перекрывает);
+  - фильтр — `EnvFilter::new("searxng_rs={level},reqwest=warn")` (детерминированный, `RUST_LOG` больше не перекрывает);
   - импорты `SubscriberExt` / `SubscriberInitExt` для `.with()` / `.init()`.
-- Вызов в `main()`: `init_tracing(config.general.debug, Path::new("searxng-rs.log"))?`.
+- Вызов в `main()`: `init_tracing(config.general.debug, Path::new("searxng-rs.log"), matches!(cli.command, Command::Mcp))?`.
 - `.gitignore` — добавлен `searxng-rs.log`.
 
 ### `src/api/mod.rs`
@@ -68,5 +68,5 @@ WARN  [RESP] api::search -> 400, time=0.001s
 ## Верификация
 - `cargo build` — OK
 - `cargo clippy --all-targets` — 0 warnings
-- `cargo test` — 80 passed, 0 failed
+- `cargo test` — 80 passed, 0 failed (на момент внедрения, 2026-09-23; текущее число тестов — в `PROJECT_MAP.md`)
 - Live: `searxng-rs serve` пишет стартовые логи и `[CALL]`/`[RESP] api::config` одновременно в консоль и в `searxng-rs.log`; при повторном запуске старые строки файла исчезают (проверено маркером).

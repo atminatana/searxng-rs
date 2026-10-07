@@ -4,8 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// A current Firefox, as `gen_useragent()` in SearXNG builds it from
+/// `searx/data/useragents.json` (no product suffix: engines block clients
+/// that identify as scrapers).
 pub const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0 searxng-rs/0.1";
+    "Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0";
 
 /// Complete, validated application configuration. All fields have defaults, so
 /// a config file is optional.
@@ -111,8 +114,19 @@ pub struct Search {
     pub default_timeout: f32,
     pub max_page: u32,
     pub autocomplete: bool,
+    /// Engine suspension after a timeout / network error, seconds
+    /// (SearXNG: `min(max_ban_time_on_fail, ban_time_on_fail)`); 0 disables.
     pub ban_time_on_fail: u32,
     pub max_ban_time_on_fail: u32,
+    /// Suspension after typed engine errors, seconds; 0 disables.
+    pub suspended_times: SuspendedTimes,
+    /// Lifetime of cached engine results, seconds; 0 disables the cache.
+    pub cache_ttl: f32,
+    /// Cached engine results kept at most; the oldest are evicted first.
+    pub cache_max_entries: usize,
+    /// Minimum interval between two requests to the same engine, seconds;
+    /// 0 disables the limit.
+    pub engine_min_interval: f32,
 }
 
 impl Default for Search {
@@ -124,6 +138,37 @@ impl Default for Search {
             autocomplete: false,
             ban_time_on_fail: 5,
             max_ban_time_on_fail: 120,
+            suspended_times: SuspendedTimes::default(),
+            cache_ttl: 300.0,
+            cache_max_entries: 1000,
+            engine_min_interval: 1.0,
+        }
+    }
+}
+
+/// Engine suspension times per error type, seconds (defaults from SearXNG's
+/// `settings.yml` `search.suspended_times`). 0 disables suspension for the
+/// error type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SuspendedTimes {
+    /// "Access denied" and HTTP 402/403.
+    pub access_denied: u32,
+    /// CAPTCHA page.
+    pub captcha: u32,
+    /// "Too many requests" and HTTP 429.
+    pub too_many_requests: u32,
+    /// Cloudflare CAPTCHA.
+    pub cf_captcha: u32,
+}
+
+impl Default for SuspendedTimes {
+    fn default() -> Self {
+        Self {
+            access_denied: 180,
+            captcha: 3600,
+            too_many_requests: 180,
+            cf_captcha: 1_296_000,
         }
     }
 }

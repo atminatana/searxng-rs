@@ -48,6 +48,8 @@ http-body-util = "0.1.5"
 
 [dev-dependencies]
 tempfile = "3"
+# `start_paused` tokio tests (virtual time for the rate-limit tests)
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = true

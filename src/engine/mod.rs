@@ -80,8 +80,10 @@ pub enum EngineError {
     TooManyRequests,
     #[error("engine returned no results")]
     NoResults,
-    #[error("engine suspended")]
-    Suspended,
+    #[error("engine suspended: {reason}; {remaining_secs}s left")]
+    Suspended { reason: String, remaining_secs: u64 },
+    #[error("rate limited: next request to this engine allowed in {0:.1}s")]
+    RateLimited(f32),
     #[error("request timeout")]
     Timeout,
     #[error("request error: {0}")]
@@ -239,6 +241,32 @@ impl EngineRegistry {
             shortcuts: HashMap::new(),
             categories: HashMap::new(),
             specs: vec![],
+        }
+    }
+
+    /// Registry over the given engines for tests (category "general").
+    #[cfg(test)]
+    pub(crate) fn with_engines(engines: Vec<(&str, Arc<dyn Engine>)>) -> Self {
+        let mut map: HashMap<String, Arc<dyn Engine>> = HashMap::new();
+        let mut categories: HashMap<String, Vec<String>> = HashMap::new();
+        let mut specs = Vec::new();
+        for (name, engine) in engines {
+            map.insert(name.to_string(), engine);
+            categories.entry("general".to_string()).or_default().push(name.to_string());
+            specs.push(EngineSpec {
+                name: name.to_string(),
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                categories: vec!["general".to_string()],
+                custom: None,
+            });
+        }
+        Self {
+            engines: map,
+            shortcuts: default_shortcuts(),
+            categories,
+            specs,
         }
     }
 
