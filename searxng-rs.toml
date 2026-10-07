@@ -38,7 +38,6 @@ max_connections_per_host = 8
 
 [mcp]
 enabled = true
-sse_port = 3001   # MCP over Streamable HTTP in addition to stdio
 
 [engines]
 # NOTE: this section replaces the built-in engine list entirely: an engine

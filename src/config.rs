@@ -199,9 +199,6 @@ impl Default for Outgoing {
 #[serde(default)]
 pub struct Mcp {
     pub enabled: bool,
-    /// If Some(port), the MCP SSE server binds to this port too.
-    /// None (default) means stdio transport only.
-    pub sse_port: Option<u16>,
     /// Allowed Host values for the Streamable HTTP MCP server (DNS-rebinding
     /// protection). Matches "host" or "host:port". Empty = allow any.
     #[serde(default)]
@@ -212,7 +209,6 @@ impl Default for Mcp {
     fn default() -> Self {
         Self {
             enabled: false,
-            sse_port: None,
             allowed_hosts: vec![
                 "localhost".to_string(),
                 "127.0.0.1".to_string(),

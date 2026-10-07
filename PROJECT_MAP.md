@@ -7,7 +7,7 @@
 ```
 src/
   lib.rs                — wiring модулей (api, config, engine, mcp, query, search)
-  main.rs               — CLI entry point (search / serve / sse / mcp / engines / config) + init_tracing
+  main.rs               — CLI entry point (search / serve / mcp / engines / config) + init_tracing
   config.rs             — TOML конфигурация + дефолты
   query.rs              — Парсинг !bang / :filter / <timeout>
   engine/
@@ -44,14 +44,13 @@ cargo clippy --all-targets    # 0 warnings / 0 errors
 cargo test                    # 115 unit + 1 integration (tests/mcp_stdio.rs), all offline
 cargo run -- search "query"
 cargo run -- serve            # JSON API + Streamable HTTP MCP on 127.0.0.1:8888
-cargo run -- sse              # MCP only, Streamable HTTP on 127.0.0.1:3001
 cargo run -- mcp              # MCP stdio server
 ```
 
 Живые проверки MCP (сеть, реальные движки; stdlib Python):
 ```bash
-python test_mcp.py                              # sse: http://127.0.0.1:3001/mcp
-python test_mcp.py http://127.0.0.1:8888/mcp    # serve
+python test_mcp.py                              # serve: http://127.0.0.1:8888/mcp
+python test_mcp.py http://host:port/mcp         # другой адрес serve
 python test_mcp_stdio.py --config searxng-rs.toml [--engines bing]   # mcp (stdio), exit 0/1
 ```
 
@@ -75,7 +74,7 @@ python test_mcp_stdio.py --config searxng-rs.toml [--engines bing]   # mcp (stdi
 - Сборка чистая, clippy чистая, 116 тестов проходят (115 unit + интеграционный `tests/mcp_stdio.rs`).
 - Доверие поисковиков (задача `2026-10-07-engine-trust`): движок после CAPTCHA/403/429/тайм-аута приостанавливается на время из `[search.suspended_times]` / `ban_time_on_fail` (порт SearXNG; успех сбрасывает счётчик; клиент MCP видит `engine suspended: <причина>; Ns left`); результаты движков кэшируются (`cache_ttl`, `cache_max_entries`, ADR 0002); запросы к одному движку разделены `engine_min_interval` (ADR 0003); HTTP-клиент хранит cookie сайтов и сливает их с явными cookie движков; заголовки навигации Firefox и User-Agent без приписки (как `gen_useragent()` в SearXNG).
 - MCP `search` без результатов: `no results[; unknown engine: <имена не из реестра>][; engine errors: <engine>: <причина>; ...]` (ошибки отсортированы по имени движка); без проблем — просто `no results`. При наличии результатов ответ — JSON-массив, как раньше. Параметр `engines`: явный список имеет приоритет; пустые имена (лишние запятые) отбрасываются; отсутствие, пустая/пробельная строка и список без имён равнозначны — берутся `!bang` из запроса, иначе включённые движки general (`select_engine_refs` в `src/mcp/mod.rs`).
-- MCP транспорты: stdio (`mcp`) и Streamable HTTP (`sse`). Streamable HTTP также смонтирован в `serve` на `/mcp`.
+- MCP транспорты: stdio (`mcp`) и Streamable HTTP — только в `serve` на `/mcp` (отдельная команда `sse` и поле `mcp.sse_port` удалены 2026-10-07; старое поле в конфиге игнорируется).
 - Логирование: все серверные функции логируют вызов с аргументами и ответ через `tracing`.
 
 ## Бэклог движков

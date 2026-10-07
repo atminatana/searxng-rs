@@ -1,10 +1,10 @@
 //! MCP (Model Context Protocol) server on top of the search engine.
 //!
 //! Exposes the metasearch as MCP tools so LLM clients (Claude, opencode, ...)
-//! can run web searches. Transports: stdio (default) and Streamable HTTP.
+//! can run web searches. Transports: stdio (`mcp` command) and Streamable HTTP
+//! (mounted at `/mcp` by the `serve` command).
 
 use std::cmp::Ordering;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -301,22 +301,6 @@ pub fn mcp_router(search: Arc<SearchEngine>, mcp: &Mcp) -> axum::Router {
         .nest_service("/mcp", ServiceBuilder::new().layer(trace_layer).service(service))
 }
 
-/// Serve the MCP server over Streamable HTTP on its own port.
-pub async fn serve_http(search: Arc<SearchEngine>, bind_addr: &str, port: u16) -> anyhow::Result<()> {
-    let addr: SocketAddr = format!("{bind_addr}:{port}")
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid bind address {bind_addr}:{port}: {e}"))?;
-    let mcp = Mcp::default();
-    let app = mcp_router(search, &mcp);
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
-    tracing::info!("MCP HTTP server listening on http://{addr}/mcp");
-    tracing::info!("MCP (Streamable HTTP) endpoint: http://{addr}/mcp");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

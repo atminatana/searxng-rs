@@ -14,11 +14,30 @@ use searxng_rs::engine::http::HttpClient;
 use searxng_rs::engine::EngineRegistry;
 use searxng_rs::search::{parse_query, SearchEngine, SearchQuery};
 
+/// Metasearch engine (Rust port of SearXNG).
+///
+/// Queries several web search engines in parallel, merges and ranks their
+/// results. Usable from the command line, as an HTTP JSON API compatible with
+/// SearXNG, and as an MCP server for LLM clients.
+///
+/// Logs go to the console and to ./searxng-rs.log (truncated on every start).
 #[derive(Parser)]
-#[command(name = "searxng-rs", version = searxng_rs::VERSION, about = "Metasearch engine (SearXNG port)")]
+#[command(
+    name = "searxng-rs",
+    version = searxng_rs::VERSION,
+    after_help = "Examples:\n  \
+        searxng-rs search \"rust programming\" -e bing,duckduckgo\n  \
+        searxng-rs search \"!wp rust :de\" --json\n  \
+        searxng-rs serve --bind 0.0.0.0 --port 8080\n  \
+        searxng-rs mcp --config /path/to/searxng-rs.toml"
+)]
 struct Cli {
-    /// Path to the TOML config file (default: $SEARXNG_RS_CONFIG or ./searxng-rs.toml).
-    #[arg(long, global = true)]
+    /// Path to the TOML config file.
+    ///
+    /// Default: $SEARXNG_RS_CONFIG, then ./searxng-rs.toml if it exists,
+    /// otherwise built-in defaults. Note: an [engines] section replaces the
+    /// built-in engine list entirely.
+    #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -27,45 +46,52 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a search and print results.
+    /// Run one search and print the results to stdout.
+    ///
+    /// Prints title, URL and snippet per result, or `redirect: <url>` for a
+    /// redirecting !bang. Engines that did not answer are listed on stderr.
     Search {
+        /// Search query. Supports `!bang` (engine or category selection,
+        /// external redirects), `:lang` (e.g. `:de`, `:all`) and `<timeout`
+        /// (e.g. `<3` seconds).
         query: String,
-        /// Limit to these engines (comma-separated).
-        #[arg(short = 'e', long)]
+        /// Query only these engines (comma-separated names, see `engines`).
+        /// Ignored when the query selects engines with a !bang.
+        /// Default: the enabled `general` engines.
+        #[arg(short = 'e', long, value_name = "NAMES")]
         engines: Option<String>,
-        /// Output as JSON.
+        /// Print the full response as JSON instead of plain text.
         #[arg(long)]
         json: bool,
-        /// Safe search level 0..2.
-        #[arg(long, default_value_t = 0)]
+        /// Safe search level: 0 = off, 1 = moderate, 2 = strict.
+        #[arg(long, default_value_t = 0, value_name = "LEVEL")]
         safesearch: u8,
-        /// Page number.
-        #[arg(long, default_value_t = 1)]
+        /// Result page number, starting at 1.
+        #[arg(long, default_value_t = 1, value_name = "N")]
         pageno: u32,
     },
-    /// Serve the JSON API + Streamable HTTP MCP on an HTTP port.
+    /// Run the HTTP server: JSON API and MCP over Streamable HTTP.
+    ///
+    /// Routes: GET /healthz, GET /search?q=... (SearXNG-compatible JSON),
+    /// GET /config and /mcp (MCP Streamable HTTP endpoint for networked MCP
+    /// clients). Runs until interrupted.
     Serve {
-        /// Bind address override (default: config `server.bind_address`).
-        #[arg(long)]
+        /// Address to listen on. Default: config `server.bind_address` (127.0.0.1).
+        #[arg(long, value_name = "ADDR")]
         bind: Option<String>,
-        /// Port override (default: config `server.port`).
-        #[arg(short, long)]
+        /// Port to listen on. Default: config `server.port` (8888).
+        #[arg(short, long, value_name = "PORT")]
         port: Option<u16>,
     },
-    /// Run the MCP server (stdio transport).
+    /// Run the MCP server over stdio (for MCP clients that spawn the process).
+    ///
+    /// stdout carries only MCP JSON-RPC; console logs go to stderr. Tools:
+    /// `search` and `engine_status`. For an MCP server reachable over the
+    /// network use `serve` (endpoint /mcp).
     Mcp,
-    /// Run the MCP server over HTTP (Streamable HTTP transport).
-    Sse {
-        /// Port to listen on (default: config `mcp.sse_port` or 3001).
-        #[arg(short, long)]
-        port: Option<u16>,
-        /// Bind address (default: 127.0.0.1).
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
-    },
-    /// List engines and their status.
+    /// List the registered engines, whether they are enabled, and their categories.
     Engines,
-    /// Show the merged configuration.
+    /// Print the effective configuration (config file merged with defaults) as TOML.
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -74,6 +100,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ConfigAction {
+    /// Print the effective configuration (the default action).
     Show,
 }
 
@@ -185,10 +212,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Mcp => {
             searxng_rs::mcp::serve_stdio(search).await
-        }
-        Command::Sse { port, bind } => {
-            let port = port.or(config.mcp.sse_port).unwrap_or(3001);
-            searxng_rs::mcp::serve_http(search, &bind, port).await
         }
         Command::Engines => {
             println!("engine                enabled  categories");

@@ -11,7 +11,7 @@ architectural decisions live in `docs/adr/`.
 ```
 src/
   lib.rs                - module wiring (api, config, engine, mcp, query, search)
-  main.rs               - CLI entry point (search / serve / mcp / sse / engines / config show)
+  main.rs               - CLI entry point (search / serve / mcp / engines / config show)
                           + tracing setup (console + searxng-rs.log)
   config.rs             - typed TOML configuration + defaults (incl. [search] trust guards)
   query.rs              - RawTextQuery: parsing of !bang / :filter / <timeout> syntax
@@ -57,7 +57,6 @@ cargo test                    # 116 tests (115 unit + 1 integration), all offlin
 cargo run -- search "rust programming" [-e bing,duckduckgo] [--json]
 cargo run -- serve            # JSON API + Streamable HTTP MCP on 127.0.0.1:8888
 cargo run -- serve --bind 0.0.0.0 --port 8080
-cargo run -- sse              # MCP only, Streamable HTTP on 127.0.0.1:3001 (or mcp.sse_port)
 cargo run -- mcp              # MCP stdio server
 cargo run -- engines          # registered engines and their status
 ```
@@ -66,8 +65,8 @@ Live checks (real network, not part of `cargo test`; exit code 0/1):
 
 ```bash
 python test_mcp_stdio.py --config searxng-rs.toml [--engines bing] [--query q] [--language en]
-python test_mcp.py                              # sse endpoint http://127.0.0.1:3001/mcp
-python test_mcp.py http://127.0.0.1:8888/mcp    # serve endpoint
+python test_mcp.py                              # serve endpoint http://127.0.0.1:8888/mcp
+python test_mcp.py http://host:port/mcp         # serve on another address
 ```
 
 Tests are offline: HTTP behaviour is tested against a loopback echo server, the
@@ -155,8 +154,8 @@ Tools (`tools/list`):
   (`ENGINES_BY_POPULARITY`), custom engines last alphabetically; optional
   `engine` filter.
 
-Transports: stdio (`mcp`) and Streamable HTTP (`sse`, or mounted at `/mcp`
-inside `serve`) via `rmcp` `StreamableHttpService` + `LocalSessionManager`
+Transports: stdio (`mcp`) and Streamable HTTP (mounted at `/mcp` inside
+`serve`; the separate `sse` command was removed on 2026-10-07) via `rmcp` `StreamableHttpService` + `LocalSessionManager`
 (sessions per `initialize`, `Mcp-Session-Id` header). `Mcp.allowed_hosts` is a
 DNS-rebinding guard (default localhost/127.0.0.1/::1).
 
@@ -182,7 +181,7 @@ project (`src/engine/engines/<name>.rs` + registration in the engine registry),
 
 - Build clean, `cargo clippy` clean, 116 tests pass.
 - Live e2e verified 2026-10-07: CLI `search`, `/healthz`, `/search`, MCP stdio
-  and Streamable HTTP (`serve` and `sse`) `initialize` / `tools/list` /
+  and Streamable HTTP (`serve`) `initialize` / `tools/list` /
   `tools/call` for both tools; cache hit, rate-limit wait and suspension
   observed in the server log.
 - The development network is unstable towards search engines (403, CAPTCHA,
@@ -192,6 +191,9 @@ project (`src/engine/engines/<name>.rs` + registration in the engine registry),
 
 ## Recent work
 
+- 2026-10-07, CLI: `sse` command, `mcp::serve_http` and `mcp.sse_port`
+  removed — networked MCP is served only by `serve` at `/mcp`; `--help`
+  texts expanded (routes, defaults, query syntax, examples).
 - 2026-10-07, trust guards: engine suspension, result cache, per-engine rate
   limit, cookie jar + merged cookies, browser headers / User-Agent
   (`docs/done/2026-10-07-engine-trust.md`, ADR 0002, ADR 0003).

@@ -2,8 +2,8 @@
 """MCP health check - stdlib only."""
 import json, sys, urllib.request, urllib.error
 
-# Optional first argument: endpoint URL, e.g. http://127.0.0.1:8888/mcp for `serve`.
-BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:3001/mcp"
+# Optional first argument: endpoint URL (default: `serve` on its default port).
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8888/mcp"
 TIMEOUT = 10
 session_id = None
 request_id = 0

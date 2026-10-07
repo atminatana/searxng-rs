@@ -74,7 +74,6 @@ searxng-rs search "query"                    # run a search, text output
 searxng-rs search "query" --json             # JSON output
 searxng-rs search "query" -e bing,duckduckgo # limit engines
 searxng-rs serve [--bind A] [--port N]       # JSON API server (axum) + MCP at /mcp
-searxng-rs sse [--bind A] [--port N]         # MCP server (Streamable HTTP) only
 searxng-rs mcp                               # MCP server (stdio)
 searxng-rs engines                           # list engines and their status
 searxng-rs config show                       # show merged configuration
