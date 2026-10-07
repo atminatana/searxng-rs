@@ -175,7 +175,8 @@ project (`src/engine/engines/<name>.rs` + registration in the engine registry),
   change set.
 - Keep `PROJECT_MAP.md` current on every code change; update this file when
   the architecture, commands or engine set change.
-- Do not commit on behalf of the owner.
+- Commit only when the owner explicitly asks for it in the current message;
+  otherwise propose the message and leave committing to the owner.
 
 ## Status / notes
 
