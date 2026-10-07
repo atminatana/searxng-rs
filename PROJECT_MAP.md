@@ -38,17 +38,25 @@ docs/
 ```bash
 cargo build                  # warning-free
 cargo clippy --all-targets    # 0 warnings / 0 errors
-cargo test                    # 80 unit tests, all pass
+cargo test                    # 80 unit + 1 integration (tests/mcp_stdio.rs), all pass
 cargo run -- search "query"
 cargo run -- serve            # JSON API + Streamable HTTP MCP on 127.0.0.1:8888
 cargo run -- sse              # MCP only, Streamable HTTP on 127.0.0.1:3001
 cargo run -- mcp              # MCP stdio server
 ```
 
+Живые проверки MCP (сеть, реальные движки; stdlib Python):
+```bash
+python test_mcp.py                              # sse: http://127.0.0.1:3001/mcp
+python test_mcp.py http://127.0.0.1:8888/mcp    # serve
+python test_mcp_stdio.py --config searxng-rs.toml [--engines bing]   # mcp (stdio), exit 0/1
+```
+
 ## Серверный логирование (2026-09-23)
 - Библиотека: `tracing` + `tracing-subscriber` (уже были в Cargo.toml)
 - Базовая конфигурация: `init_tracing(debug, log_path)` в `main.rs`
-- Вывод идёт в **две цели** одновременно: stdout (с ANSI-цветом) и файл `searxng-rs.log` (без ANSI)
+- Вывод идёт в **две цели** одновременно: консоль (с ANSI-цветом) и файл `searxng-rs.log` (без ANSI)
+- Консоль = stdout для всех команд, **кроме `mcp` (stdio)**: там stdout — канал JSON-RPC, поэтому логи идут в stderr без ANSI (2026-10-07, фикс «bing не отвечает через MCP»; регрессия — `tests/mcp_stdio.rs`)
 - Файл создаётся через `File::create` — **перезаписывается (truncate) при каждом запуске**
 - Фильтр детерминированный: `EnvFilter::new("searxng_rs={level},reqwest={level}")` (`RUST_LOG` не влияет)
 - Логируются: `api::search`, `api::config`, `mcp::search`, `mcp::engine_status`, `search::SearchEngine::search`
@@ -56,7 +64,8 @@ cargo run -- mcp              # MCP stdio server
 - Детали в `docs/server-logging.md`
 
 ## Статус
-- Сборка чистая, clippy чистая, 80 тестов проходят.
+- Сборка чистая, clippy чистая, 85 тестов проходят (84 unit + интеграционный `tests/mcp_stdio.rs`).
+- MCP `search` без результатов: `no results[; unknown engine: <имена не из реестра>][; engine errors: <engine>: <причина>; ...]` (ошибки отсортированы по имени движка); без проблем — просто `no results`. При наличии результатов ответ — JSON-массив, как раньше.
 - MCP транспорты: stdio (`mcp`) и Streamable HTTP (`sse`). Streamable HTTP также смонтирован в `serve` на `/mcp`.
 - Логирование: все серверные функции логируют вызов с аргументами и ответ через `tracing`.
 

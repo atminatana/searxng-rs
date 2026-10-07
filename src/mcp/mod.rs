@@ -16,7 +16,8 @@ use rmcp::{schemars, tool, tool_router, ErrorData, ServiceExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Mcp;
-use crate::search::{parse_query, SearchEngine, SearchQuery};
+use crate::engine::EngineRegistry;
+use crate::search::{parse_query, EngineOutcome, SearchEngine, SearchQuery};
 
 /// Arguments of the `search` MCP tool.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema, Serialize)]
@@ -96,6 +97,9 @@ impl SearchMcpServer {
         if let Some(lang) = args.language {
             sq.languages = vec![lang];
         }
+        // The search orchestrator silently skips names missing from the
+        // registry; collect them here to tell the client.
+        let unknown_engines = find_unknown_engines(&sq, self.search.registry());
 
         let resp = self
             .search
@@ -117,9 +121,9 @@ impl SearchMcpServer {
         }
 
         if resp.results.is_empty() {
-            let r = Ok("no results".to_string());
-            tracing::info!("[RESP] mcp::search -> 0 results, time={:.3}s", start.elapsed().as_secs_f64());
-            return r;
+            let message = describe_empty_search(&unknown_engines, &resp.outcomes);
+            tracing::info!("[RESP] mcp::search -> {}, time={:.3}s", message, start.elapsed().as_secs_f64());
+            return Ok(message);
         }
 
         let json =
@@ -159,6 +163,45 @@ impl SearchMcpServer {
         tracing::info!("[RESP] mcp::engine_status -> {} engines", lines.len());
         r
     }
+}
+
+/// Requested engine names that are not in the registry (not configured in
+/// `[engines]` or misspelled), in request order, without duplicates.
+fn find_unknown_engines(query: &SearchQuery, registry: &EngineRegistry) -> Vec<String> {
+    let mut unknown: Vec<String> = Vec::new();
+    for engine_ref in &query.enginerefs {
+        let name = &engine_ref.name;
+        let is_unknown = !name.is_empty() && !registry.is_loaded(name);
+        if is_unknown && !unknown.contains(name) {
+            unknown.push(name.clone());
+        }
+    }
+    unknown
+}
+
+/// Reply for a search without results. Unknown engine names and engine
+/// failures (CAPTCHA, HTTP 403, timeout, ...) are listed so the client can
+/// tell "nothing found" from "the engine did not answer". Engine errors are
+/// sorted by engine name: outcomes arrive in completion order, which is not
+/// deterministic.
+fn describe_empty_search(unknown_engines: &[String], outcomes: &[EngineOutcome]) -> String {
+    let mut engine_errors: Vec<String> = outcomes
+        .iter()
+        .filter_map(|outcome| {
+            let error = outcome.error.as_ref()?;
+            Some(format!("{}: {error}", outcome.engine))
+        })
+        .collect();
+    engine_errors.sort();
+
+    let mut message = "no results".to_string();
+    if !unknown_engines.is_empty() {
+        message.push_str(&format!("; unknown engine: {}", unknown_engines.join(", ")));
+    }
+    if !engine_errors.is_empty() {
+        message.push_str(&format!("; engine errors: {}", engine_errors.join("; ")));
+    }
+    message
 }
 
 /// Serve the MCP server over stdio until the client disconnects.
@@ -218,4 +261,75 @@ pub async fn serve_http(search: Arc<SearchEngine>, bind_addr: &str, port: u16) -
     tracing::info!("MCP (Streamable HTTP) endpoint: http://{addr}/mcp");
     axum::serve(listener, app).await?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::engine::EngineError;
+
+    fn outcome(engine: &str, error: Option<EngineError>) -> EngineOutcome {
+        EngineOutcome {
+            engine: engine.to_string(),
+            category: "general".to_string(),
+            results: Vec::new(),
+            suggestions: Vec::new(),
+            corrections: Vec::new(),
+            answers: Vec::new(),
+            error,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn empty_search_without_engine_errors_says_no_results() {
+        assert_eq!(describe_empty_search(&[], &[]), "no results");
+        assert_eq!(describe_empty_search(&[], &[outcome("bing", None)]), "no results");
+    }
+
+    #[test]
+    fn empty_search_lists_engine_errors_sorted_by_engine() {
+        let outcomes = [
+            outcome("google", Some(EngineError::AccessDenied)),
+            outcome("bing", None),
+            outcome("brave", Some(EngineError::Timeout)),
+        ];
+        assert_eq!(
+            describe_empty_search(&[], &outcomes),
+            "no results; engine errors: brave: request timeout; google: Access denied"
+        );
+    }
+
+    #[test]
+    fn empty_search_lists_unknown_engines_before_engine_errors() {
+        let unknown = vec!["yahoo".to_string(), "no_such_engine".to_string()];
+        assert_eq!(
+            describe_empty_search(&unknown, &[]),
+            "no results; unknown engine: yahoo, no_such_engine"
+        );
+        assert_eq!(
+            describe_empty_search(&unknown[..1], &[outcome("google", Some(EngineError::AccessDenied))]),
+            "no results; unknown engine: yahoo; engine errors: google: Access denied"
+        );
+    }
+
+    #[test]
+    fn finds_only_unregistered_engine_names_once() {
+        let config = crate::config::Config::default();
+        let client = crate::engine::http::HttpClient::from_config(&config).expect("http client");
+        let registry = EngineRegistry::from_config(&config, &client);
+        assert!(registry.is_loaded("bing"), "default config must register bing");
+
+        let mut query = SearchQuery::simple("rust".to_string(), 0);
+        query.enginerefs = ["bing", "bign", "", "bign", "no_such_engine"]
+            .iter()
+            .map(|name| crate::query::EngineRef {
+                name: name.to_string(),
+                category: "none".to_string(),
+            })
+            .collect();
+
+        assert_eq!(find_unknown_engines(&query, &registry), vec!["bign", "no_such_engine"]);
+    }
 }

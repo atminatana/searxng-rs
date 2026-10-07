@@ -2,7 +2,8 @@
 """MCP health check - stdlib only."""
 import json, sys, urllib.request, urllib.error
 
-BASE_URL = "http://127.0.0.1:3001/mcp"
+# Optional first argument: endpoint URL, e.g. http://127.0.0.1:8888/mcp for `serve`.
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:3001/mcp"
 TIMEOUT = 10
 session_id = None
 request_id = 0
@@ -99,6 +100,23 @@ def call(method, params=None):
     return parsed
 
 
+def count_search_results(response):
+    """Number of hits in a `search` tool response; 0 on a tool error or a
+    non-list reply ("no results", "redirect: ...")."""
+    result = response.get("result", {})
+    if result.get("isError"):
+        print(f"FAIL: search tool error: {result.get('content')}")
+        return 0
+    content = result.get("content") or [{}]
+    text = content[0].get("text", "")
+    try:
+        hits = json.loads(text)
+    except json.JSONDecodeError:
+        print(f"FAIL: search returned: {text[:200]!r}")
+        return 0
+    return len(hits) if isinstance(hits, list) else 0
+
+
 def main():
     # 1. Initialize
     init = call("initialize", {
@@ -147,11 +165,18 @@ def main():
             "pageno": 1,
         },
     })
-    if search is not None:
-        content = search.get("result", {}).get("content", [])
-        print(f"\nsearch result: {content}")
+    if search is None:
+        print("\n=== Check complete: FAIL (search call failed) ===")
+        return 1
+    content = search.get("result", {}).get("content", [])
+    print(f"\nsearch result: {content}")
 
-    print("\n=== Check complete ===")
+    result_count = count_search_results(search)
+    if result_count == 0:
+        print("\n=== Check complete: FAIL (search returned no results) ===")
+        return 1
+    print(f"\nsearch results: {result_count}")
+    print("\n=== Check complete: OK ===")
     return 0
 
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -76,14 +77,23 @@ enum ConfigAction {
     Show,
 }
 
-fn init_tracing(debug: bool, log_path: &Path) -> anyhow::Result<()> {
+/// `is_stdio_mcp`: stdout is the MCP JSON-RPC channel, and the MCP spec
+/// forbids anything else there, so console logs go to stderr without ANSI
+/// colors (MCP clients capture stderr into their log files).
+fn init_tracing(debug: bool, log_path: &Path, is_stdio_mcp: bool) -> anyhow::Result<()> {
     let level = if debug { "trace" } else { "info" };
     let filter = EnvFilter::new(format!("searxng_rs={level},reqwest=warn"));
 
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let console_writer = if is_stdio_mcp {
+        BoxMakeWriter::new(std::io::stderr)
+    } else {
+        BoxMakeWriter::new(std::io::stdout)
+    };
+    let console_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
-        .with_ansi(true)
-        .with_level(true);
+        .with_ansi(!is_stdio_mcp)
+        .with_level(true)
+        .with_writer(console_writer);
 
     let file = std::fs::File::create(log_path)?;
     let file_layer = tracing_subscriber::fmt::layer()
@@ -93,7 +103,7 @@ fn init_tracing(debug: bool, log_path: &Path) -> anyhow::Result<()> {
         .with_writer(std::sync::Mutex::new(file));
 
     tracing_subscriber::registry()
-        .with(stdout_layer)
+        .with(console_layer)
         .with(file_layer)
         .with(filter)
         .init();
@@ -106,7 +116,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let config = Arc::new(Config::load(cli.config.as_deref())?);
-    init_tracing(config.general.debug, Path::new("searxng-rs.log"))?;
+    let is_stdio_mcp = matches!(cli.command, Command::Mcp);
+    init_tracing(config.general.debug, Path::new("searxng-rs.log"), is_stdio_mcp)?;
 
     let client = HttpClient::from_config(&config)?;
     let registry = Arc::new(EngineRegistry::from_config(&config, &client));
