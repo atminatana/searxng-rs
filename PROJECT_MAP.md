@@ -32,6 +32,7 @@ src/
     mod.rs              — MCP server (stdio + Streamable HTTP) + серверный логинг
 docs/
   server-logging.md     — Описание серверного логирования (tracing)
+  adr/                  — Architecture Decision Records (индекс: adr/README.md)
 ```
 
 ## Сборка / тесты
@@ -64,8 +65,13 @@ python test_mcp_stdio.py --config searxng-rs.toml [--engines bing]   # mcp (stdi
 - Детали в `docs/server-logging.md`
 
 ## Статус
+- `searxng-rs.toml`: в `[engines]` 13 рабочих движков (секция заменяет встроенный список целиком; движок вне её не регистрируется и в MCP даёт `unknown engine`). По умолчанию опрашиваются движки категории general (bing, duckduckgo, wikipedia, yandex, naver), it/news/images — только по явному запросу.
+- 2026-10-07 из конфига убраны нерабочие из текущей сети: google, google_news, google_images (403), baidu, startpage (CAPTCHA), pypi (JS-challenge), brave, yahoo (тайм-ауты). Код движков сохранён — вернуть строкой в `[engines]`.
+- bing: локаль передаётся только как `setlang=<основной язык>`, без `mkt` и `cc` — отступление от SearXNG, см. [ADR 0001](docs/adr/0001-bing-locale-setlang-only.md).
+- Язык `all` (любой регистр, MCP `language`, API или `:all` в запросе) и пустой язык = язык не задан: `EngineParams::language()` возвращает `None`, `:all` вырезается из текста запроса.
+- MCP `engine_status`: описание больше не перечисляет все модули, а говорит, что список берётся из конфига и только эти имена допустимы в `search`. Вывод отсортирован по популярности сервиса (`ENGINES_BY_POPULARITY` в `src/mcp/mod.rs`, все 21 встроенный модуль); движки вне списка (custom) — в конце по алфавиту.
 - Сборка чистая, clippy чистая, 85 тестов проходят (84 unit + интеграционный `tests/mcp_stdio.rs`).
-- MCP `search` без результатов: `no results[; unknown engine: <имена не из реестра>][; engine errors: <engine>: <причина>; ...]` (ошибки отсортированы по имени движка); без проблем — просто `no results`. При наличии результатов ответ — JSON-массив, как раньше.
+- MCP `search` без результатов: `no results[; unknown engine: <имена не из реестра>][; engine errors: <engine>: <причина>; ...]` (ошибки отсортированы по имени движка); без проблем — просто `no results`. При наличии результатов ответ — JSON-массив, как раньше. Параметр `engines`: явный список имеет приоритет; пустые имена (лишние запятые) отбрасываются; отсутствие, пустая/пробельная строка и список без имён равнозначны — берутся `!bang` из запроса, иначе включённые движки general (`select_engine_refs` в `src/mcp/mod.rs`).
 - MCP транспорты: stdio (`mcp`) и Streamable HTTP (`sse`). Streamable HTTP также смонтирован в `serve` на `/mcp`.
 - Логирование: все серверные функции логируют вызов с аргументами и ответ через `tracing`.
 

@@ -28,12 +28,31 @@ enabled = true
 sse_port = 3001   # MCP over Streamable HTTP in addition to stdio
 
 [engines]
-google = { enabled = true, weight = 1.0, timeout = 6.0 }
+# NOTE: this section replaces the built-in engine list entirely: an engine
+# missing here is not registered and MCP reports it as "unknown engine".
+# NOTE: removed 2026-10-07 as non-working from the current network (live MCP
+# check): google, google_news, google_images (HTTP 403), baidu, startpage
+# (CAPTCHA), pypi (JavaScript challenge page), brave, yahoo (timeouts). The
+# engine code is kept: add a line here to re-enable one.
+
+# general - queried by default when no engines are requested
 bing = { enabled = true, weight = 1.0 }
 duckduckgo = { enabled = true, weight = 1.0 }
 wikipedia = { enabled = true, weight = 1.0 }
-brave = { enabled = true, weight = 1.0 }
 yandex = { enabled = true, weight = 1.0 }
+naver = { enabled = true, weight = 1.0 }
+
+# it - queried only when requested explicitly (engines="github,crates", ...)
+github = { enabled = true, weight = 1.0 }
+gitlab = { enabled = true, weight = 1.0 }
+npm = { enabled = true, weight = 1.0 }
+docker_hub = { enabled = true, weight = 1.0 }
+crates = { enabled = true, weight = 1.0 }
+hackernews = { enabled = true, weight = 1.0 }
+
+# news / images - queried only when requested explicitly
+bing_news = { enabled = true, weight = 1.0 }
+bing_images = { enabled = true, weight = 1.0 }
 
 # A custom XPath engine - configured entirely in TOML, no Rust code needed.
 # [[engines.custom]]

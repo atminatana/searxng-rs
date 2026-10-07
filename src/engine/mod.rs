@@ -116,9 +116,18 @@ pub struct EngineParams {
     pub category: String,
 }
 
+/// SearXNG's "all languages" tag: the same as no language at all.
+const ALL_LANGUAGES: &str = "all";
+
 impl EngineParams {
+    /// The requested language, or `None` when none is set, it is blank or
+    /// it is `ALL_LANGUAGES` (case-insensitive).
     pub fn language(&self) -> Option<&str> {
-        self.languages.first().map(String::as_str)
+        let language = self.languages.first()?;
+        if language.trim().is_empty() || language.eq_ignore_ascii_case(ALL_LANGUAGES) {
+            return None;
+        }
+        Some(language.as_str())
     }
 }
 
@@ -320,6 +329,25 @@ pub fn normalize_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn params_with_languages(languages: &[&str]) -> EngineParams {
+        EngineParams {
+            query: "rust".to_string(),
+            languages: languages.iter().map(|l| l.to_string()).collect(),
+            safesearch: 0,
+            pageno: 1,
+            category: "general".to_string(),
+        }
+    }
+
+    #[test]
+    fn language_all_means_no_language() {
+        assert_eq!(params_with_languages(&[]).language(), None);
+        assert_eq!(params_with_languages(&["all"]).language(), None);
+        assert_eq!(params_with_languages(&["ALL"]).language(), None);
+        assert_eq!(params_with_languages(&[""]).language(), None);
+        assert_eq!(params_with_languages(&["de-DE"]).language(), Some("de-DE"));
+    }
 
     #[test]
     fn normalize_whitespace() {

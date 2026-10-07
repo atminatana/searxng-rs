@@ -3,6 +3,7 @@
 //! Exposes the metasearch as MCP tools so LLM clients (Claude, opencode, ...)
 //! can run web searches. Transports: stdio (default) and Streamable HTTP.
 
+use std::cmp::Ordering;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,8 @@ use rmcp::{schemars, tool, tool_router, ErrorData, ServiceExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Mcp;
-use crate::engine::EngineRegistry;
+use crate::engine::{EngineRegistry, EngineSpec};
+use crate::query::EngineRef;
 use crate::search::{parse_query, EngineOutcome, SearchEngine, SearchQuery};
 
 /// Arguments of the `search` MCP tool.
@@ -24,8 +26,13 @@ use crate::search::{parse_query, EngineOutcome, SearchEngine, SearchQuery};
 struct SearchToolArgs {
     /// The search query text.
     query: String,
-    /// Comma-separated engine names to restrict to (e.g. "google,bing").
-    /// Empty means use all enabled engines.
+    /// Comma-separated engine names to query (e.g. "bing,duckduckgo"); valid
+    /// names and their categories are listed by `engine_status`. Named engines
+    /// of any category (general, it, news, images) can be requested; unknown
+    /// names are reported as "unknown engine" when nothing is found.
+    /// Empty names (stray commas) are ignored. Omitted, empty or no names
+    /// left: engines picked by `!bang` shortcuts in `query`, otherwise the
+    /// enabled "general" engines.
     #[serde(default)]
     engines: Option<String>,
     /// Safe search level: 0 off, 1 moderate, 2 strict.
@@ -81,19 +88,7 @@ impl SearchMcpServer {
         sq.external_bang = rq.external_bang.clone();
         sq.timeout_limit = rq.timeout_limit;
 
-        if let Some(filter) = args.engines {
-            if !filter.trim().is_empty() {
-                sq.enginerefs = filter
-                    .split(',')
-                    .map(|name| crate::query::EngineRef {
-                        name: name.trim().to_string(),
-                        category: "none".to_string(),
-                    })
-                    .collect();
-            }
-        } else if !rq.enginerefs.is_empty() {
-            sq.enginerefs = rq.enginerefs;
-        }
+        sq.enginerefs = select_engine_refs(args.engines.as_deref(), rq.enginerefs);
         if let Some(lang) = args.language {
             sq.languages = vec![lang];
         }
@@ -132,20 +127,20 @@ impl SearchMcpServer {
         Ok(json)
     }
 
-    /// List configured search engines and whether they are enabled.
-    /// Supported modules: google, bing, brave, yandex, duckduckgo, wikipedia,
-    /// yahoo, baidu, naver, startpage, github, gitlab, npm, pypi, docker_hub,
-    /// crates, hackernews, google_news, bing_news, google_images, bing_images,
-    /// plus custom xpath/json engines.
-    #[tool(description = "List all configured search engines (built-in and custom) with their status and categories. Supported modules: google, bing, brave, yandex, duckduckgo, wikipedia, yahoo, baidu, naver, startpage, github, gitlab, npm, pypi, docker_hub, crates, hackernews, google_news, bing_news, google_images, bing_images, plus custom xpath/json engines.")]
+    /// List the engines registered from the config `[engines]` section. Only
+    /// these names are usable in `search`; the list is not hard-coded here
+    /// because it depends on the config.
+    #[tool(description = "List the search engines available on this server, as registered from its configuration (built-in and custom), one per line: \"<name>: enabled|disabled (<categories>)\". Only engine names from this list can be passed to `search`; any other name is reported as \"unknown engine\". Engines in the \"general\" category are queried by default when `search` gets no `engines`; others (it, news, images) only when requested explicitly.")]
     fn engine_status(
         &self,
         Parameters(args): Parameters<EngineStatusArgs>,
     ) -> Result<String, ErrorData> {
         tracing::info!("[CALL] mcp::engine_status(engine={:?})", args.engine);
         let registry = self.search.registry();
+        let mut specs: Vec<&EngineSpec> = registry.specs.iter().collect();
+        specs.sort_by(|a, b| compare_by_popularity(&a.name, &b.name));
         let mut lines = Vec::new();
-        for spec in &registry.specs {
+        for spec in specs {
             if let Some(filter) = &args.engine {
                 if &spec.name != filter {
                     continue;
@@ -163,6 +158,66 @@ impl SearchMcpServer {
         tracing::info!("[RESP] mcp::engine_status -> {} engines", lines.len());
         r
     }
+}
+
+/// Built-in engines from most to least popular, by the approximate worldwide
+/// popularity of the underlying service (web search: market share; others:
+/// site traffic). Used only to order the `engine_status` output.
+const ENGINES_BY_POPULARITY: [&str; 21] = [
+    "google",
+    "bing",
+    "yandex",
+    "yahoo",
+    "baidu",
+    "duckduckgo",
+    "wikipedia",
+    "naver",
+    "brave",
+    "startpage",
+    "google_news",
+    "google_images",
+    "bing_news",
+    "bing_images",
+    "github",
+    "npm",
+    "pypi",
+    "docker_hub",
+    "gitlab",
+    "crates",
+    "hackernews",
+];
+
+/// Most popular first; engines missing from `ENGINES_BY_POPULARITY` (custom
+/// engines) go last, alphabetically.
+fn compare_by_popularity(a: &str, b: &str) -> Ordering {
+    let rank = |name: &str| {
+        ENGINES_BY_POPULARITY
+            .iter()
+            .position(|known| *known == name)
+            .unwrap_or(ENGINES_BY_POPULARITY.len())
+    };
+    (rank(a), a).cmp(&(rank(b), b))
+}
+
+/// Engines for a `search` call: the explicit `engines` list wins. Empty
+/// names (stray commas, blanks) are dropped; when no name is left, or the
+/// list is omitted, the `!bang` selection from the query is used (an empty
+/// result means "the enabled general engines" to the orchestrator).
+fn select_engine_refs(requested: Option<&str>, bang_refs: Vec<EngineRef>) -> Vec<EngineRef> {
+    let requested_refs: Vec<EngineRef> = requested
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| EngineRef {
+            name: name.to_string(),
+            category: "none".to_string(),
+        })
+        .collect();
+    if requested_refs.is_empty() {
+        return bang_refs;
+    }
+    requested_refs
 }
 
 /// Requested engine names that are not in the registry (not configured in
@@ -311,6 +366,65 @@ mod tests {
         assert_eq!(
             describe_empty_search(&unknown[..1], &[outcome("google", Some(EngineError::AccessDenied))]),
             "no results; unknown engine: yahoo; engine errors: google: Access denied"
+        );
+    }
+
+    #[test]
+    fn sorts_engines_by_popularity_with_unranked_last_alphabetically() {
+        let mut names = vec!["my_xpath", "crates", "bing", "a_custom", "google", "naver"];
+        names.sort_by(|a, b| compare_by_popularity(a, b));
+        assert_eq!(names, vec!["google", "bing", "naver", "crates", "a_custom", "my_xpath"]);
+    }
+
+    #[test]
+    fn popularity_list_names_only_builtin_engines() {
+        for name in ENGINES_BY_POPULARITY {
+            let spec = EngineSpec {
+                name: name.to_string(),
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                categories: vec![],
+                custom: None,
+            };
+            assert!(crate::engine::engines::builtin(&spec).is_some(), "not a built-in engine: {name}");
+        }
+    }
+
+    fn engine_ref(name: &str, category: &str) -> EngineRef {
+        EngineRef {
+            name: name.to_string(),
+            category: category.to_string(),
+        }
+    }
+
+    #[test]
+    fn blank_engines_list_behaves_like_omitted_one() {
+        let bang_refs = vec![engine_ref("bing", "general")];
+        for requested in [None, Some(""), Some("   "), Some(","), Some(" , ,")] {
+            assert_eq!(
+                select_engine_refs(requested, bang_refs.clone()),
+                bang_refs,
+                "requested={requested:?}"
+            );
+            assert!(select_engine_refs(requested, Vec::new()).is_empty(), "requested={requested:?}");
+        }
+    }
+
+    #[test]
+    fn empty_engine_names_from_stray_commas_are_dropped() {
+        assert_eq!(
+            select_engine_refs(Some(",bing,, ,crates,"), Vec::new()),
+            vec![engine_ref("bing", "none"), engine_ref("crates", "none")]
+        );
+    }
+
+    #[test]
+    fn explicit_engines_list_overrides_bang_selection() {
+        let bang_refs = vec![engine_ref("bing", "general")];
+        assert_eq!(
+            select_engine_refs(Some(" duckduckgo , crates "), bang_refs),
+            vec![engine_ref("duckduckgo", "none"), engine_ref("crates", "none")]
         );
     }
 

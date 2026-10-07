@@ -51,8 +51,7 @@ impl Engine for BingEngine {
             ("adlt".into(), adlt.to_string()),
         ];
         if let Some(lang) = params.language() {
-            let market = market_code(lang);
-            query_params.push(("mkt".into(), market.to_string()));
+            query_params.push(("setlang".into(), setlang(lang)));
         }
 
         let qs = query_params
@@ -90,23 +89,13 @@ impl Engine for BingEngine {
     }
 }
 
-/// en-US → en-US; en → en-US; de → de-DE, etc. (Bing `mkt` parameter).
-fn market_code(lang: &str) -> String {
-    let parts: Vec<&str> = lang.split('-').collect();
-    let primary = parts[0].to_lowercase();
-    let country = match parts.get(1) {
-        Some(c) => c.to_uppercase(),
-        None => default_country(&primary),
-    };
-    format!("{primary}-{country}")
-}
-
-fn default_country(lang: &str) -> String {
-    match lang {
-        "en" => "US".to_string(),
-        "pt" => "BR".to_string(),
-        other => other.to_uppercase(),
-    }
+/// Bing `setlang` value: the primary language of a tag (de-DE -> de).
+/// Only the language is sent - no `mkt` and no `cc` (SearXNG's `bing.py`
+/// sends `cc`): with a country/market Bing intermittently returns an empty
+/// "There are no results" page. See docs/adr/0001-bing-locale-setlang-only.md.
+fn setlang(lang: &str) -> String {
+    let primary = lang.split('-').next().unwrap_or(lang);
+    primary.to_lowercase()
 }
 
 fn lang_header(lang: Option<&str>) -> &str {
@@ -235,10 +224,11 @@ mod tests {
     }
 
     #[test]
-    fn market_code_builds_mkt() {
-        assert_eq!(market_code("en"), "en-US");
-        assert_eq!(market_code("en-US"), "en-US");
-        assert_eq!(market_code("de"), "de-DE");
-        assert_eq!(market_code("zh-CN"), "zh-CN");
+    fn setlang_keeps_only_primary_language() {
+        assert_eq!(setlang("en"), "en");
+        assert_eq!(setlang("en-US"), "en");
+        assert_eq!(setlang("de-DE"), "de");
+        assert_eq!(setlang("PT-br"), "pt");
+        assert_eq!(setlang("zh-CN"), "zh");
     }
 }

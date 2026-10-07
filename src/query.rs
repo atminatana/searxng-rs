@@ -78,7 +78,8 @@ pub const KNOWN_LANGUAGE_CODES: &[&str] = &[
 ];
 
 pub fn is_valid_language_code(value: &str) -> bool {
-    if value == "auto" {
+    // "auto" and "all" are SearXNG pseudo-languages; "all" means no language.
+    if value == "auto" || value == "all" {
         return true;
     }
     // Accept any well-formed xx or xx-YY tag.
@@ -412,6 +413,9 @@ mod tests {
         assert_eq!(rq.languages, vec!["fr"]);
         let rq = test_rq(":en_us hello");
         assert_eq!(rq.languages, vec!["en-US"]);
+        let rq = test_rq(":all rust");
+        assert_eq!(rq.languages, vec!["all"]);
+        assert_eq!(rq.get_query(), "rust");
     }
 
     #[test]
